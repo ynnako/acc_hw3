@@ -262,6 +262,14 @@ public:
         return false;
     }
 
+    void getQueues(queue<cpu_to_gpu_entry> *cpu_to_gpu , queue<gpu_to_cpu_entry> *gpu_to_cpu){
+        cpu_to_gpu = this.cpu_to_gpu;
+        gpu_to_cpu = this.gpu_to_cpu;
+    }
+
+
+    
+
     int calc_blocks(int threads_per_block)
     {
         int device;

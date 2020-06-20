@@ -250,16 +250,41 @@ public:
 class server_queues_context : public rdma_server_context {
 private:
     std::unique_ptr<gpu_image_processing_context> server;
-
+    int blocks;
     /* TODO: add memory region(s) for CPU-GPU queues */
-
+    struct ibv_mr *mr_cpu_to_gpu; 
+    struct ibv_mr *mr_gpu_to_cpu; 
+    queue<cpu_to_gpu_entry> *cpu_to_gpu;
+    queue<gpu_to_cpu_entry> *gpu_to_cpu;
+    
 public:
-    explicit server_queues_context(uint16_t tcp_port) : rdma_server_context(tcp_port)
+    explicit server_queues_context(uint16_t tcp_port) : rdma_server_context(tcp_port),
+            server(create_queues_server(256))
     {
+        
         /* TODO Initialize additional server MRs as needed. */
+        blocks = server->calc_blocks();
+        server->getQueues(cpu_to_gpu , gpu_to_cpu); //get pointers to queues
+        
+        // register the memory regions
+        mr_cpu_to_gpu = ibv_reg_mr(pd, cpu_to_gpu, sizeof(queue<cpu_to_gpu_entry>[blocks]) , IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+        if (!mr_cpu_to_gpu) {
+            perror("ibv_reg_mr() failed for mr_cpu_to_gpu");
+            exit(1);
+        }
+        mr_gpu_to_cpu = ibv_reg_mr(pd, gpu_to_cpu, sizeof(queue<gpu_to_cpu_entry>[blocks]) , IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+        if (!mr_gpu_to_cpu) {
+            perror("ibv_reg_mr() failed for mr_gpu_to_cpu");
+            exit(1);
+        }
 
         /* TODO Exchange rkeys, addresses, and necessary information (e.g.
          * number of queues) with the client */
+        int connectionEstablished = 1;
+        while (connectionEstablished != 0) {
+            connectionEstablished = recv_req();
+        }
+        
     }
 
     ~server_queues_context()
@@ -272,6 +297,99 @@ public:
         /* TODO simplified version of server_rpc_context::event_loop. As the
          * client use one sided operations, we only need one kind of message to
          * terminate the server at the end. */
+
+        struct ibv_wc wc;
+        while(1){
+            int ncqes = ibv_poll_cq(cq, 1, &wc);
+            if (ncqes < 0) {
+                perror("ibv_poll_cq() failed");
+                exit(1);
+            }
+            if (ncqes > 0) {
+                VERBS_WC_CHECK(wc);
+                switch (wc.opcode) {
+                case IBV_WC_RECV:
+                    /* Received a new request from the client */
+                    req = &requests[0];
+                    /* Terminate signal */
+                    if (req->request_id == -1) {
+                        printf("Terminating...\n");
+                        return;
+                    }
+                    else{
+                        printf("Unexpected completion\n");
+                        assert(false);
+                    }
+                default:
+                    printf("Unexpected completion\n");
+                    assert(false);
+                }
+            }
+        }
+    }
+
+    // This method takes care of recieving one send request.
+    int recv_req(){
+        
+        struct ibv_wc wc;
+        struct ibv_sge sg; /* scatter/gather element */
+        struct ibv_send_wr wr; /* WQE */
+        struct ibv_send_wr *bad_wr; /* ibv_post_send() reports bad WQEs here */
+        // Step 1: Poll for CQE
+        int ncqes = ibv_poll_cq(cq, 1, &wc);
+        if (ncqes < 0) {
+            perror("ibv_poll_cq() failed");
+            exit(1);
+        }
+        if (ncqes > 0) {
+            VERBS_WC_CHECK(wc);
+            switch (wc.opcode) {
+            case IBV_WC_RECV:
+                /* Received a new request from the client */
+                req = &requests[0];
+                /* Terminate signal */
+                if (req->request_id == -1) {
+                    printf("Terminating...\n");
+                    return -1;
+                }
+                /* send info to client using Send operation */
+
+                struct rpc_request *req = &requests[0];
+                req->request_id = blocks; // we will use this to tell the client how many blocks there are
+                req->input_rkey =  mr_cpu_to_gpu->rkey ;
+                req->input_addr = (uintptr_t)cpu_to_gpu;
+                req->input_length = sizeof(queue<cpu_to_gpu_entry>[blocks];
+                req->output_rkey = mr_gpu_to_cpu->rkey ;
+                req->output_addr = (uintptr_t)gpu_to_cpu;
+                req->output_length = sizeof(queue<cpu_to_gpu_entry>[blocks];
+
+                /* RDMA send needs a gather element (local buffer)*/
+                memset(&sg, 0, sizeof(struct ibv_sge));
+                sg.addr = (uintptr_t)req;
+                sg.length = sizeof(*req);
+                sg.lkey = mr_requests->lkey;
+
+                /* WQE */
+                memset(&wr, 0, sizeof(struct ibv_send_wr));
+                wr.wr_id = 0; /* helps identify the WQE */
+                wr.sg_list = &sg;
+                wr.num_sge = 1;
+                wr.opcode = IBV_WR_SEND;
+                wr.send_flags = IBV_SEND_SIGNALED; /* always set this in this excersize. generates CQE */
+
+                /* post the WQE to the HCA to execute it */
+                if (ibv_post_send(qp, &wr, &bad_wr)) {
+                    perror("ibv_post_send() failed");
+                    exit(1);
+                }
+                return 0;
+                break;
+            default:
+                printf("Unexpected completion\n");
+                assert(false);
+            }
+        }
+        return 1;
     }
 };
 
