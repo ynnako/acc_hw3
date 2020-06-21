@@ -358,10 +358,10 @@ public:
                 req->request_id = blocks; // we will use this to tell the client how many blocks there are
                 req->input_rkey =  mr_cpu_to_gpu->rkey ;
                 req->input_addr = (uintptr_t)cpu_to_gpu;
-                req->input_length = sizeof(queue<cpu_to_gpu_entry>[blocks];
+                req->input_length = sizeof(queue<cpu_to_gpu_entry>[blocks]);
                 req->output_rkey = mr_gpu_to_cpu->rkey ;
                 req->output_addr = (uintptr_t)gpu_to_cpu;
-                req->output_length = sizeof(queue<cpu_to_gpu_entry>[blocks];
+                req->output_length = sizeof(queue<cpu_to_gpu_entry>[blocks]);
 
                 /* RDMA send needs a gather element (local buffer)*/
                 memset(&sg, 0, sizeof(struct ibv_sge));
