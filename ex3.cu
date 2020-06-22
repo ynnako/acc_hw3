@@ -283,10 +283,10 @@ public:
         
         connectionContext[0].request_id = 0;
         connectionContext[0].input_rkey = mr_images_in->rkey;
-        connectionContext[0].input_length = IMG_SZ * N_IMAGES;
+        connectionContext[0].input_length = OUTSTANDING_REQUESTS * IMG_SZ;
         connectionContext[0].input_addr = (uintptr_t) images_in;
         connectionContext[0].output_rkey = mr_images_out->rkey;
-        connectionContext[0].output_length = IMG_SZ * N_IMAGES;
+        connectionContext[0].output_length = OUTSTANDING_REQUESTS * IMG_SZ;
         connectionContext[0].output_addr = (uintptr_t) images_out;
         connectionContext[1].request_id = 1;
         connectionContext[1].input_rkey = mr_cpu_to_gpu->rkey;
@@ -312,8 +312,34 @@ public:
         /* TODO simplified version of server_rpc_context::event_loop. As the
          * client use one sided operations, we only need one kind of message to
          * terminate the server at the end. */
+        bool terminate = false;
 
-        
+        while (!terminate) {
+            // Step 1: Poll for CQE
+            struct ibv_wc wc;
+            int ncqes = ibv_poll_cq(cq, 1, &wc);
+            if (ncqes < 0) {
+                perror("ibv_poll_cq() failed");
+                exit(1);
+            }
+            if (ncqes > 0) {
+		        VERBS_WC_CHECK(wc);
+                switch (wc.opcode) {
+                case IBV_WC_RECV:
+                    /* Received a new request from the client */
+                    req = &requests[0];
+
+                    /* Terminate signal */
+                    if (req->request_id == -1) {
+                        printf("Terminating...\n");
+                        terminate = true;
+                    }
+                    break;
+                default:
+                    printf("Unexpected completion\n");
+                    assert(false);
+                }
+            }   
     }
 
     // This method takes care of recieving one send request.
