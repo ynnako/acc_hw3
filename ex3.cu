@@ -438,7 +438,7 @@ public:
 		producer_nextBlockIdx = ((producer_nextBlockIdx + 1) % blocks);
 		
 		++requests_enqueued;
-		std::cout << "enqueued:" << requests_enqueued << std::endl;
+		std::cout << "enqueued:" << requests_enqueued << " img id:" << img_id << std::endl;
         return true;
     }
 
@@ -459,7 +459,7 @@ public:
 		consumer_nextBlockIdx = ((consumer_nextBlockIdx + 1) % blocks);
 		
 		++requests_dequeued;
-		std::cout << "dequeued:" << requests_dequeued << std::endl;
+		std::cout << "dequeued:" << requests_dequeued << " img id:" << *img_id << std::endl;
         return true;
     }
     
@@ -469,7 +469,7 @@ public:
 
         //rdma read pi
         post_rdma_read(
-            &q_context.pi,              // local_src
+            &(q_context.pi),              // local_src
             sizeof(int),                // len
             mr_queue_context->lkey,     // lkey
             pi_ptr,                // remote_dst
@@ -478,7 +478,7 @@ public:
         
         //rdma read ci
         post_rdma_read(
-            &q_context.ci,              // local_src
+            &(q_context.ci),              // local_src
             sizeof(int),                // len
             mr_queue_context->lkey,     // lkey
             ci_ptr,                // remote_dst
@@ -532,13 +532,13 @@ public:
         q_context.c2g.img_out = (uchar*)(connectionContext[0].output_addr + IMG_SZ * (img_id % OUTSTANDING_REQUESTS));
 
         rkey = connectionContext[1].input_rkey;
-        post_rdma_write((uint64_t)&(queue_ptr->data[pi % NSLOTS]), sizeof(cpu_to_gpu_entry) , rkey, &q_context.c2g, mr_queue_context->lkey, 1, nullptr);
+        post_rdma_write((uint64_t)&(queue_ptr->data[pi % NSLOTS]), sizeof(cpu_to_gpu_entry) , rkey, &(q_context.c2g), mr_queue_context->lkey, 1, nullptr);
         
 		//b. update pi
 		q_context.pi = pi + 1;
         rkey = connectionContext[1].input_rkey;
 		
-        post_rdma_write((uint64_t)&(queue_ptr->pi), sizeof(int) , rkey, &q_context.pi, mr_queue_context->lkey, 2, nullptr);
+        post_rdma_write((uint64_t)&(queue_ptr->pi), sizeof(int) , rkey, &(q_context.pi), mr_queue_context->lkey, 2, nullptr);
         
 		bool imgSent = false , entrySent = false , piSent = false;
         while (!imgSent || !entrySent || !piSent) {
@@ -568,7 +568,7 @@ public:
 
 		//receive image id from queue
         uint32_t rkey = connectionContext[1].output_rkey;
-		post_rdma_read(&(q_context.g2c), sizeof(gpu_to_cpu_entry) , mr_queue_context->lkey, (uint64_t)&(queue_ptr->data[ci]), rkey, 0);
+		post_rdma_read(&(q_context.g2c), sizeof(gpu_to_cpu_entry) , mr_queue_context->lkey, (uint64_t)&(queue_ptr->data[ci % NSLOTS]), rkey, 0);
 		
 		bool entryRead = false;
 		while (!entryRead) {
