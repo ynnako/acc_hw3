@@ -216,7 +216,7 @@ public:
         // TODO free resources allocated in constructor
 	for (int b = 0; b < blocks; ++b)
 	    cpu_to_gpu[b].kill.store(true, memory_order_relaxed);
-        CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaDeviceSynchronize());
 	cpu_to_gpu->~queue<cpu_to_gpu_entry>();
 	gpu_to_cpu->~queue<gpu_to_cpu_entry>();
 	CUDA_CHECK(cudaFreeHost(queue_buffer));
@@ -263,13 +263,14 @@ public:
     }
 
     void getQueues(queue<cpu_to_gpu_entry> *cpu_to_gpu , queue<gpu_to_cpu_entry> *gpu_to_cpu){
-        cpu_to_gpu = this.cpu_to_gpu;
-        gpu_to_cpu = this.gpu_to_cpu;
+        cpu_to_gpu = this->cpu_to_gpu;
+        gpu_to_cpu = this->gpu_to_cpu;
     }
-
-
-    
-
+	
+	int getBlocks(){
+		return blocks;
+	}
+	
     int calc_blocks(int threads_per_block)
     {
         int device;

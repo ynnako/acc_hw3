@@ -81,7 +81,7 @@ public:
 
                     // Step 3: Process on GPU
                     gpu_context->enqueue(wc.wr_id, img_in, img_out);
-		    break;
+					break;
                     
                 case IBV_WC_RDMA_WRITE:
                     /* Completed RDMA Write - reuse buffers for receiving the next requests */
@@ -105,7 +105,7 @@ public:
 
 send_rdma_write:
                 // Step 4: Send RDMA Write with immediate to client with the response
-		post_rdma_write(
+				post_rdma_write(
                     req->output_addr,                       // remote_dst
                     terminate ? 0 : req->output_length,     // len
                     req->output_rkey,                       // rkey
@@ -250,7 +250,7 @@ public:
 
 class server_queues_context : public rdma_server_context {
 private:
-    std::unique_ptr<gpu_image_processing_context> server;
+    queues_gpu_context gpu_context;
     int blocks;
     /* TODO: add memory region(s) for CPU-GPU queues */
     struct ibv_mr *mr_cpu_to_gpu; 
@@ -261,19 +261,19 @@ private:
 public:
     explicit server_queues_context(uint16_t tcp_port) : 
         rdma_server_context(tcp_port),
-        server(create_queues_server(256)){
+        gpu_context(queues_gpu_context(256)){
         
         /* TODO Initialize additional server MRs as needed. */
-        blocks = server->calc_blocks();
-        server->getQueues(cpu_to_gpu , gpu_to_cpu); //get pointers to queues
+        blocks = gpu_context.getBlocks();
+        gpu_context.getQueues(cpu_to_gpu , gpu_to_cpu); //get pointers to queues
         
         // register the memory regions
-        mr_cpu_to_gpu = ibv_reg_mr(pd, cpu_to_gpu, sizeof(queue<cpu_to_gpu_entry>[blocks]) , IBV_ACCESS_LOCAL_READ | IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+        mr_cpu_to_gpu = ibv_reg_mr(pd, cpu_to_gpu, sizeof(queue<cpu_to_gpu_entry>[blocks]) , IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
         if (!mr_cpu_to_gpu) {
             perror("ibv_reg_mr() failed for mr_cpu_to_gpu");
             exit(1);
         }
-        mr_gpu_to_cpu = ibv_reg_mr(pd, gpu_to_cpu, sizeof(queue<gpu_to_cpu_entry>[blocks]) ,  IBV_ACCESS_LOCAL_READ | IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+        mr_gpu_to_cpu = ibv_reg_mr(pd, gpu_to_cpu, sizeof(queue<gpu_to_cpu_entry>[blocks]) , IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
         if (!mr_gpu_to_cpu) {
             perror("ibv_reg_mr() failed for mr_gpu_to_cpu");
             exit(1);
@@ -312,8 +312,10 @@ public:
         /* TODO simplified version of server_rpc_context::event_loop. As the
          * client use one sided operations, we only need one kind of message to
          * terminate the server at the end. */
-        bool terminate = false;
-
+        
+		bool terminate = false;
+		rpc_request* req;
+		
         while (!terminate) {
             // Step 1: Poll for CQE
             struct ibv_wc wc;
@@ -339,27 +341,30 @@ public:
                     printf("Unexpected completion\n");
                     assert(false);
                 }
-            }   
+            }
+		}
     }
-
-    // This method takes care of recieving one send request.
+};
     
 struct queue_context{
     int pi;
     int ci;
     cpu_to_gpu_entry c2g;
     gpu_to_cpu_entry g2c;
-
-}
+};
 
 class client_queues_context : public rdma_client_context {
 private:
     /* TODO add necessary context to track the client side of the GPU's
      * producer/consumer queues */
+	
+	uint32_t requests_enqueued = 0;
+    uint32_t requests_dequeued = 0;
+	uchar* out_images;
     int blocks;
-     int c2gPiOffset , c2gCiOffset , c2gDataOffset;
+    int c2gPiOffset , c2gCiOffset , c2gDataOffset;
     int g2cPiOffset , g2cCiOffset , g2cDataOffset;
-    int nextBlockIdx = 0;
+    int producer_nextBlockIdx = 0, consumer_nextBlockIdx = 0;
     struct queue_context q_context;
     struct rpc_request connectionContext[2];
     struct ibv_mr *mr_images_in; /* Memory region for input images */
@@ -376,16 +381,16 @@ public:
         queue<cpu_to_gpu_entry> c2gTempQueue;
         queue<gpu_to_cpu_entry> g2cTempQueue;
         //get address offsets to fields inside queueus
-        c2gPiOffset = &c2gTempQueue.pi - &c2gTempQueue;
-        c2gCiOffset = &c2gTempQueue.ci - &c2gTempQueue;
-        c2gDataOffset = &c2gTempQueue.data - &c2gTempQueue;
-        g2cPiOffset = &g2cTempQueue.pi - &g2cTempQueue;
-        g2cCiOffset = &g2cTempQueue.ci - &g2cTempQueue;
-        g2cDataOffset = &g2cTempQueue.data - &c2gTempQueue;
+        c2gPiOffset = (uintptr_t)&c2gTempQueue.pi - (uintptr_t)&c2gTempQueue;
+        c2gCiOffset = (uintptr_t)&c2gTempQueue.ci - (uintptr_t)&c2gTempQueue;
+        c2gDataOffset = (uintptr_t)&c2gTempQueue.data - (uintptr_t)&c2gTempQueue;
+        g2cPiOffset = (uintptr_t)&g2cTempQueue.pi - (uintptr_t)&g2cTempQueue;
+        g2cCiOffset = (uintptr_t)&g2cTempQueue.ci - (uintptr_t)&g2cTempQueue;
+        g2cDataOffset = (uintptr_t)&g2cTempQueue.data - (uintptr_t)&c2gTempQueue;
 
         recv_over_socket(connectionContext, 2 * sizeof(rpc_request));
         blocks = connectionContext[0].request_id;
-        mr_queue_context = ibv_reg_mr(pd, &q_context, sizeof(queue_context), IBV_ACCESS_LOCAL_READ | IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+        mr_queue_context = ibv_reg_mr(pd, &q_context, sizeof(queue_context), IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
         if (!mr_queue_context) {
             perror("ibv_reg_mr() failed for input images");
             exit(1);
@@ -395,13 +400,14 @@ public:
     ~client_queues_context()
     {
 	/* TODO terminate the server and release memory regions and other resources */
+        ibv_dereg_mr(mr_queue_context);
     }
 
     virtual void set_input_images(uchar *images_in, size_t bytes) override
     {
         // TODO register memory
         /* register a memory region for the input images. */
-        mr_images_in = ibv_reg_mr(pd, images_in, bytes, IBV_ACCESS_LOCAL_READ | IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+        mr_images_in = ibv_reg_mr(pd, images_in, bytes, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
         if (!mr_images_in) {
             perror("ibv_reg_mr() failed for input images");
             exit(1);
@@ -411,8 +417,9 @@ public:
     virtual void set_output_images(uchar *images_out, size_t bytes) override
     {
         // TODO register memory
-        /* register a memory region for the input images. */
-        mr_images_in = ibv_reg_mr(pd, images_out, bytes, IBV_ACCESS_LOCAL_READ | IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
+        /* register a memory region for the output images. */
+		out_images = images_out;
+        mr_images_out = ibv_reg_mr(pd, images_out, bytes, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
         if (!mr_images_out) {
             perror("ibv_reg_mr() failed for output images");
             exit(1);
@@ -423,19 +430,25 @@ public:
     {
         /* TODO use RDMA Write and RDMA Read operations to enqueue the task on
          * a CPU-GPU producer consumer queue running on the server. */
-        int queueEntrySize = sizeof(queue<cpu_to_gpu_entry>);
+        
+		if (requests_enqueued - requests_dequeued == OUTSTANDING_REQUESTS)
+            return false;
+			
+		int queueEntrySize = sizeof(queue<cpu_to_gpu_entry>);
         uint64_t baseAddr = connectionContext[1].input_addr;
         uint64_t ciOffset = c2gCiOffset;
         uint64_t piOffset = c2gPiOffset;
         uint32_t rkey = connectionContext[1].input_rkey;
-        int isFull , piV , ciV;
-        for(int count = 0; count < blocks ; count++ , nextBlockIdx = (nextBlockIdx + 1) % blocks){
-            isFull = queueStatus(nextBlockIdx , queueEntrySize , baseAddr , ciOffset , piOffset , rkey , &piV , &ciV);
-            if(isFull < NSLOTS) break;
+        int num_of_used_slots , piV , ciV;
+        for(int count = 0; count < blocks ; count++ , producer_nextBlockIdx = (producer_nextBlockIdx + 1) % blocks){
+            num_of_used_slots = queueStatus(producer_nextBlockIdx , queueEntrySize , baseAddr , ciOffset , piOffset , rkey , &piV , &ciV);
+            if(num_of_used_slots < NSLOTS) break;
         }
-        if(isFull == NSLOTS) return false;
-        write_image(img_id, img_in, img_out, nextBlockIdx, piV);
-        nextBlockIdx++;
+        if(num_of_used_slots == NSLOTS) return false;
+        write_image(img_id, img_in, img_out, producer_nextBlockIdx, piV);
+        producer_nextBlockIdx = (producer_nextBlockIdx + 1) % blocks;
+		
+		++requests_enqueued;
         return true;
     }
 
@@ -443,11 +456,27 @@ public:
     {
         /* TODO use RDMA Write and RDMA Read operations to detect the completion and dequeue a processed image
          * through a CPU-GPU producer consumer queue running on the server. */
-        return false;
+        
+        int queueEntrySize = sizeof(queue<gpu_to_cpu_entry>);
+        uint64_t baseAddr = connectionContext[1].output_addr;
+        uint64_t ciOffset = g2cCiOffset;
+        uint64_t piOffset = g2cPiOffset;
+        uint32_t rkey = connectionContext[1].output_rkey;
+        int num_of_used_slots , piV , ciV;
+        for(int count = 0; count < blocks ; count++ , consumer_nextBlockIdx = (consumer_nextBlockIdx + 1) % blocks){
+            num_of_used_slots = queueStatus(consumer_nextBlockIdx , queueEntrySize , baseAddr , ciOffset , piOffset , rkey , &piV , &ciV);
+            if(num_of_used_slots > 0) break;
+        }
+        if(num_of_used_slots == 0) return false;
+        read_image(img_id, consumer_nextBlockIdx, ciV);
+        consumer_nextBlockIdx = (consumer_nextBlockIdx + 1) % blocks;
+		
+		++requests_dequeued;
+        return true;
     }
     
 
-    int queueStatus(int blockIdx , int queueEntrySize , uint64_t baseAddr,  uint64_t ciOffset , uint64_t piOffset , uint32_t rkey, int *piVal , *int ciVal){
+    int queueStatus(int blockIdx , int queueEntrySize , uint64_t baseAddr,  uint64_t ciOffset , uint64_t piOffset , uint32_t rkey, int *piVal , int *ciVal){
         int pi , ci;
 
         //rdma read pi
@@ -487,10 +516,10 @@ public:
                         pi_rcv = true;
                     }
                     if(wc.wr_id == 2){
-                         pi = q_context.pi;
+                         ci = q_context.ci;
                          ci_rcv = true;
                     } 
-                }  
+                }
                 else{
                     printf("Unexpected completion\n");
                     assert(false);
@@ -503,29 +532,34 @@ public:
     }
 
     void write_image(int img_id, uchar *img_in, uchar *img_out, int blockIdx , int pi){
-        uint64_t remote_dst = connectionContext[0].input_addr + IMG_SZ * img_id;
+        
+		uint64_t remote_dst = connectionContext[0].input_addr + IMG_SZ * (img_id % OUTSTANDING_REQUESTS);
         uint32_t rkey = connectionContext[0].input_rkey;
-        int queueEntrySize = sizeof(queue<cpu_to_gpu_entry>);
-        //Write image data
-        post_rdma_write(remote_dst, IMG_SZ , rkey, img_in, mr_images_in->lkey, img_id, nullptr);
         
-        //post image to queue:
+		//Write image data
+        post_rdma_write(remote_dst, IMG_SZ , rkey, img_in, mr_images_in->lkey, 0, nullptr);
+        
+		//post image to queue:
         //a. update data entry
-        
         q_context.c2g.img_idx = img_id;
-        q_context.c2g.img_in = remote_dst;
-        q_context.c2g.img_out = connectionContext[0].output_addr + IMG_SZ * img_id;
-        q_context.pi = pi + 1;
+        q_context.c2g.img_in = (uchar*)remote_dst;
+        q_context.c2g.img_out = (uchar*)(connectionContext[0].output_addr + IMG_SZ * (img_id % OUTSTANDING_REQUESTS));
 
+        int queueEntrySize = sizeof(queue<cpu_to_gpu_entry>);
         int queueDataArrayOffset = c2gDataOffset + (pi % NSLOTS) * sizeof(cpu_to_gpu_entry);
         remote_dst = connectionContext[1].input_addr + queueEntrySize * blockIdx + queueDataArrayOffset;
         rkey = connectionContext[1].input_rkey;
-        post_rdma_write(remote_dst, sizeof(cpu_to_gpu_entry) , rkey, &q_context.c2g, mr_queue_context->lkey, img_id + N_IMAGES, nullptr);
-        //b. update pi
+		
+        post_rdma_write(remote_dst, sizeof(cpu_to_gpu_entry) , rkey, &q_context.c2g, mr_queue_context->lkey, 1, nullptr);
+        
+		//b. update pi
+		q_context.pi = pi + 1;
         remote_dst = connectionContext[1].input_addr + queueEntrySize * blockIdx + c2gPiOffset;
         rkey = connectionContext[1].input_rkey;
-        post_rdma_write(remote_dst, sizeof(int) , rkey, &q_context.pi, mr_queue_context->lkey, img_id + 2 * N_IMAGES, nullptr);
-        bool imgSent = false , entrySent = false , piSent = false;
+		
+        post_rdma_write(remote_dst, sizeof(int) , rkey, &q_context.pi, mr_queue_context->lkey, 2, nullptr);
+        
+		bool imgSent = false , entrySent = false , piSent = false;
         while (!imgSent || !entrySent || !piSent) {
             // Step 1: Poll for CQE
             struct ibv_wc wc;
@@ -536,17 +570,67 @@ public:
             }
             if (ncqes > 0) {
 		        VERBS_WC_CHECK(wc);
-                if( wc.opcode = IBV_WC_RDMA_WRITE) {    
-                    if(wc.wr_id == img_id) imgSent = true;
-                    if(wc.wr_id == img_id + N_IMAGES) entrySent = true;
-                    if(wc.wr_id == img_id + 2 * N_IMAGES) piSent = true;
+                if( wc.opcode == IBV_WC_RDMA_WRITE) {    
+                    if(wc.wr_id == 0) imgSent = true;
+                    if(wc.wr_id == 1) entrySent = true;
+                    if(wc.wr_id == 2) piSent = true;
                 }
                 else{
                     printf("Unexpected completion\n");
                     assert(false);
                 }
             }
-        } 
+        }
+    }
+	
+	void read_image(int* img_id, int blockIdx , int ci){
+
+		//receive image id from queue
+		int queueEntrySize = sizeof(queue<gpu_to_cpu_entry>);
+		int queueDataArrayOffset = g2cDataOffset + (ci % NSLOTS) * sizeof(gpu_to_cpu_entry);
+        uint64_t remote_dst = connectionContext[1].output_addr + queueEntrySize * blockIdx + queueDataArrayOffset;
+        uint32_t rkey = connectionContext[1].output_rkey;
+		
+		post_rdma_read(&q_context.g2c, sizeof(gpu_to_cpu_entry) , mr_queue_context->lkey, remote_dst, rkey, 0);
+		
+		*img_id = q_context.g2c.img_idx;
+
+		//receive image from queue
+        remote_dst = connectionContext[0].output_addr + IMG_SZ * ((*img_id) % OUTSTANDING_REQUESTS);
+        rkey = connectionContext[0].output_rkey;
+        
+        post_rdma_read(out_images + (*img_id) * IMG_SZ, IMG_SZ , mr_images_out->lkey, remote_dst, rkey, 1);
+		
+		//update ci
+		q_context.ci = ci + 1;
+        remote_dst = connectionContext[1].output_addr + queueEntrySize * blockIdx + g2cCiOffset;
+        rkey = connectionContext[1].output_rkey;
+		
+        post_rdma_write(remote_dst, sizeof(int) , rkey, &q_context.ci, mr_queue_context->lkey, 2);
+		
+        bool entryRead = false, imgRead = false, ciSent = false;
+        while (!entryRead || !imgRead || !ciSent) {
+            // Step 1: Poll for CQE
+            struct ibv_wc wc;
+            int ncqes = ibv_poll_cq(cq, 1, &wc);
+            if (ncqes < 0) {
+                perror("ibv_poll_cq() failed");
+                exit(1);
+            }
+            if (ncqes > 0) {
+		        VERBS_WC_CHECK(wc);
+                if(wc.opcode == IBV_WC_RDMA_READ) {
+                    if(wc.wr_id == 0) entryRead = true;
+                    if(wc.wr_id == 1) imgRead = true;
+                }
+                else if(wc.opcode == IBV_WC_RDMA_WRITE) {
+					if(wc.wr_id == 2) ciSent = true;
+				} else {
+                    printf("Unexpected completion\n");
+                    assert(false);
+                }
+            }
+        }
     }
 };
 
