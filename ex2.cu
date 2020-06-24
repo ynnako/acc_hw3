@@ -5,7 +5,7 @@
 #include "ex2.h"
 
 #include <cassert>
-
+#include <iostream>
 #include <cuda/atomic>
 
 using cuda::memory_order_relaxed;
@@ -205,6 +205,7 @@ public:
         CUDA_CHECK(cudaMallocHost(&queue_buffer, sizeof(*cpu_to_gpu) * blocks + sizeof(*gpu_to_cpu) * blocks));
         
         cpu_to_gpu = new (queue_buffer) queue<cpu_to_gpu_entry>[blocks];
+		
         gpu_to_cpu = new (queue_buffer + sizeof(queue<cpu_to_gpu_entry>[blocks])) queue<gpu_to_cpu_entry>[blocks];
 
         // TODO launch GPU producer-consumer kernel with given number of threads
@@ -262,9 +263,9 @@ public:
         return false;
     }
 
-    void getQueues(queue<cpu_to_gpu_entry> *cpu_to_gpu , queue<gpu_to_cpu_entry> *gpu_to_cpu){
-        cpu_to_gpu = this->cpu_to_gpu;
-        gpu_to_cpu = this->gpu_to_cpu;
+    void getQueues(queue<cpu_to_gpu_entry> **cpu_to_gpu , queue<gpu_to_cpu_entry> **gpu_to_cpu){
+        *cpu_to_gpu = this->cpu_to_gpu;
+        *gpu_to_cpu = this->gpu_to_cpu;
     }
 	
 	int getBlocks(){
