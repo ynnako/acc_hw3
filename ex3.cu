@@ -390,8 +390,11 @@ public:
 
     ~client_queues_context()
     {
-	/* TODO terminate the server and release memory regions and other resources */
+    /* TODO terminate the server and release memory regions and other resources */
+        kill();
         ibv_dereg_mr(mr_queue_context);
+        ibv_dereg_mr(mr_images_in);
+        ibv_dereg_mr(mr_images_out);
     }
 
     virtual void set_input_images(uchar *images_in, size_t bytes) override
@@ -437,7 +440,7 @@ public:
 		producer_nextBlockIdx = ((producer_nextBlockIdx + 1) % blocks);
 		
 		++requests_enqueued;
-		std::cout << "enqueued:" << requests_enqueued << " img id:" << img_id << std::endl;
+		// std::cout << "enqueued:" << requests_enqueued << " img id:" << img_id << std::endl;
         return true;
     }
 
@@ -458,7 +461,7 @@ public:
 		consumer_nextBlockIdx = ((consumer_nextBlockIdx + 1) % blocks);
 		
 		++requests_dequeued;
-		std::cout << "dequeued:" << requests_dequeued << " img id:" << *img_id << std::endl;
+		// std::cout << "dequeued:" << requests_dequeued << " img id:" << *img_id << std::endl;
         return true;
     }
     
@@ -623,6 +626,60 @@ public:
                 }
             }
         }
+    }
+    void kill(){
+        struct ibv_sge sg; /* scatter/gather element */
+        struct ibv_send_wr wr; /* WQE */
+        struct ibv_send_wr *bad_wr; /* ibv_post_send() reports bad WQEs here */
+        struct rpc_request *req = &requests[0];
+        req->request_id = -1;
+        req->input_rkey =  0;
+        req->input_addr = 0;
+        req->input_length = 0;
+        req->output_rkey = 0;
+        req->output_addr = 0;
+        req->output_length = 0;
+
+        /* RDMA send needs a gather element (local buffer)*/
+        memset(&sg, 0, sizeof(struct ibv_sge));
+        sg.addr = (uintptr_t)req;
+        sg.length = sizeof(*req);
+        sg.lkey = mr_requests->lkey;
+
+        /* WQE */
+        memset(&wr, 0, sizeof(struct ibv_send_wr));
+        wr.wr_id = 0; /* helps identify the WQE */
+        wr.sg_list = &sg;
+        wr.num_sge = 1;
+        wr.opcode = IBV_WR_SEND;
+        wr.send_flags = IBV_SEND_SIGNALED; /* always set this in this excersize. generates CQE */
+
+        /* post the WQE to the HCA to execute it */
+        if (ibv_post_send(qp, &wr, &bad_wr)) {
+            perror("ibv_post_send() failed");
+            exit(1);
+        }
+        
+        bool teminated = false;
+        while (!teminated) {
+            struct ibv_wc wc;
+            int ncqes = ibv_poll_cq(cq, 1, &wc);
+            if (ncqes < 0) {
+                perror("ibv_poll_cq() failed");
+                exit(1);
+            }
+            if (ncqes > 0) {
+                VERBS_WC_CHECK(wc);
+                if (wc.opcode == IBV_WC_SEND) {
+                    teminated = true;
+                }
+                else{
+                    printf("Unexpected completion\n");
+                    assert(false);
+                }
+            }
+        }
+
     }
 };
 
