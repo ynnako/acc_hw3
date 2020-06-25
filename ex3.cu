@@ -269,7 +269,6 @@ public:
         
         // register the memory regions
         mr_cpu_to_gpu = ibv_reg_mr(pd, cpu_to_gpu, sizeof(queue<cpu_to_gpu_entry>[blocks]) , IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_REMOTE_READ);
-		//std::cout << "cpu_to_gpu address (second):" << cpu_to_gpu << std::endl;
         if (!mr_cpu_to_gpu) {
             perror("ibv_reg_mr() failed for mr_cpu_to_gpu");
             exit(1);
@@ -422,7 +421,7 @@ public:
     {
         /* TODO use RDMA Write and RDMA Read operations to enqueue the task on
          * a CPU-GPU producer consumer queue running on the server. */
-        
+		
 		if (requests_enqueued - requests_dequeued == OUTSTANDING_REQUESTS)
             return false;
 
@@ -595,8 +594,7 @@ public:
 		//receive image from queue
         uint64_t remote_dst = connectionContext[0].output_addr + IMG_SZ * ((*img_id) % OUTSTANDING_REQUESTS);
         rkey = connectionContext[0].output_rkey;
-        
-        post_rdma_read(out_images + (*img_id) * IMG_SZ, IMG_SZ , mr_images_out->lkey, remote_dst, rkey, 1);
+        post_rdma_read(out_images + ((*img_id) % N_IMAGES) * IMG_SZ, IMG_SZ , mr_images_out->lkey, remote_dst, rkey, 1);
 		
 		//update ci
 		q_context.ci = ci + 1;
